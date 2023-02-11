@@ -1,0 +1,17 @@
+databases:
+  local-dev:
+    host: localhost
+    port: 5432
+
+connections:
+  - database: local-dev
+    user: testuser
+    password:
+      type: pass
+      path: db/testuser/password
+
+  - database: local-dev
+    user: anotheruser
+    password:
+      type: env
+      var: DB_PASSWORD
