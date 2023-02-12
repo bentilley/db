@@ -8,30 +8,62 @@ import (
 )
 
 type Config struct {
-	Databases   map[string]Database
-	Connections []Connection
+	Databases map[string]Database
+	Sessions  []Session
 }
 
-func (c *Config) URIs() ([]string, error) {
-	uris := []string{}
-	for _, connection := range c.Connections {
-		uri, err := connection.URI()
-		if err != nil {
-			return nil, fmt.Errorf("get uri: %w", err)
-		}
-		uris = append(uris, uri)
+func (c *Config) SearchStrings() []string {
+	searchDetails := [][]string{}
+	for _, session := range c.Sessions {
+		details := []string{session.String(), session.Description}
+		searchDetails = append(searchDetails, details)
 	}
-	return uris, nil
+	return ColumnFormat(searchDetails)
 }
 
 type Database struct {
+	Config DatabaseConfig
+}
+
+func (d *Database) UnmarshalYAML(value *yaml.Node) error {
+	typeIndex := -1
+	for i, node := range value.Content {
+		if node.Tag == "!!str" && node.Value == "type" {
+			typeIndex = i
+			break
+		}
+	}
+	if typeIndex == -1 || typeIndex+1 > len(value.Content) {
+		return fmt.Errorf("could not find type node")
+	}
+	passwordType := value.Content[typeIndex+1].Value
+	switch passwordType {
+	case "postgres":
+		d.Config = &Postgres{}
+	}
+	return value.Decode(d.Config)
+}
+
+func (d *Database) DatabaseSlug() string {
+	return d.Config.DatabaseSlug()
+}
+
+type DatabaseConfig interface {
+	DatabaseSlug() string
+}
+
+type Postgres struct {
 	Description string
 	Host        string
 	Port        string
 	Database    string
 }
 
-type Connection struct {
+func (p *Postgres) DatabaseSlug() string {
+	return fmt.Sprintf("%s:%s/%s", p.Host, p.Port, p.Database)
+}
+
+type Session struct {
 	Description  string
 	DatabaseName string    `yaml:"database"`
 	Database     *Database `yaml:"-"`
@@ -39,32 +71,53 @@ type Connection struct {
 	Password     Password
 }
 
-func (c *Connection) URI() (string, error) {
-	userSlug, err := c.UserSlug()
+func (s *Session) String() string {
+	userSlug := s.PasswordlessUserSlug()
+	databaseSlug := s.Database.DatabaseSlug()
+	if userSlug == "" {
+		return fmt.Sprintf("postgres://%s", databaseSlug)
+	} else {
+		return fmt.Sprintf("postgres://%s@%s", userSlug, databaseSlug)
+	}
+}
+
+func (s *Session) URI() (string, error) {
+	userSlug, err := s.UserSlug()
 	if err != nil {
 		return "", fmt.Errorf("get user slug: %w", err)
 	}
-	return fmt.Sprintf(
-		"postgres://%s@%s:%s/%s",
-		userSlug,
-		c.Database.Host,
-		c.Database.Port,
-		c.Database.Database,
-	), nil
+	databaseSlug := s.Database.DatabaseSlug()
+	if userSlug == "" {
+		return fmt.Sprintf("postgres://%s", databaseSlug), nil
+	} else {
+		return fmt.Sprintf("postgres://%s@%s", userSlug, databaseSlug), nil
+	}
 }
 
-func (c *Connection) UserSlug() (string, error) {
-	if c.User == "" {
+func (s *Session) UserSlug() (string, error) {
+	if s.User == "" {
 		return "", nil
 	}
-	password, err := c.Password.GetPassword()
+	password, err := s.Password.GetPassword()
 	if err != nil {
 		return "", fmt.Errorf("get password: %w", err)
 	}
 	if password == "" {
-		return c.User, nil
+		return s.User, nil
 	} else {
-		return fmt.Sprintf("%s:%s", c.User, password), nil
+		return fmt.Sprintf("%s:%s", s.User, password), nil
+	}
+}
+
+func (s *Session) PasswordlessUserSlug() string {
+	var password string
+	if s.Password.HasPassword() {
+		password = "***"
+	}
+	if password == "" {
+		return s.User
+	} else {
+		return fmt.Sprintf("%s:%s", s.User, password)
 	}
 }
 
@@ -72,18 +125,22 @@ type Password struct {
 	Config PasswordConfig
 }
 
-func (a *Password) GetPassword() (string, error) {
-	if a.Config == nil {
-		return "", nil
-	}
-	return a.Config.GetPassword()
+func (p *Password) HasPassword() bool {
+	return p.Config != nil
 }
 
-func (a *Password) UnmarshalYAML(value *yaml.Node) error {
+func (p *Password) GetPassword() (string, error) {
+	if p.Config == nil {
+		return "", nil
+	}
+	return p.Config.GetPassword()
+}
+
+func (p *Password) UnmarshalYAML(value *yaml.Node) error {
 	// handle the simple case where the password is in plaintext in the yaml.
 	if value.Tag == "!!str" {
 		var password PlainTextPassword
-		a.Config = &password
+		p.Config = &password
 		return value.Decode(&password.Value)
 	}
 
@@ -100,11 +157,11 @@ func (a *Password) UnmarshalYAML(value *yaml.Node) error {
 	passwordType := value.Content[typeIndex+1].Value
 	switch passwordType {
 	case "pass":
-		a.Config = &PassPassword{}
+		p.Config = &PassPassword{}
 	case "env":
-		a.Config = &EnvPassword{}
+		p.Config = &EnvPassword{}
 	}
-	return value.Decode(a.Config)
+	return value.Decode(p.Config)
 }
 
 type PasswordConfig interface {
@@ -117,12 +174,12 @@ func ParseConfig(configYaml []byte) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal yaml: %w", err)
 	}
-	for i, connection := range config.Connections {
-		database, ok := config.Databases[connection.DatabaseName]
+	for i, session := range config.Sessions {
+		database, ok := config.Databases[session.DatabaseName]
 		if !ok {
-			return nil, fmt.Errorf("could not find database %s", connection.DatabaseName)
+			return nil, fmt.Errorf("could not find database %s", session.DatabaseName)
 		}
-		config.Connections[i].Database = &database
+		config.Sessions[i].Database = &database
 	}
 	return config, nil
 }

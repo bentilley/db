@@ -1,9 +1,11 @@
 databases:
   local-dev:
+    description: Local Database
+    type: postgres
     host: localhost
     port: 5432
 
-connections:
+sessions:
   - database: local-dev
     user: testuser
     password:

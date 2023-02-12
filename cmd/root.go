@@ -3,8 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/bentilley/db/pkg/db"
 	"github.com/spf13/cobra"
@@ -29,21 +27,19 @@ var rootCmd = &cobra.Command{
 			fmt.Printf("could not load config: %v\n", err)
 			return
 		}
-		uris, err := config.URIs()
-		if err != nil {
-			fmt.Printf("could not get uris: %v\n", err)
-			return
-		}
-		list := strings.Join(uris, "\n")
 
-		fzfCmd := exec.Command("fzf", "--height", "100%")
-		fzfCmd.Stdin = strings.NewReader(list)
-		fzfCmd.Stdout = os.Stdout
-		fzfCmd.Stderr = os.Stderr
-		if err := fzfCmd.Run(); err != nil {
-			fmt.Printf("could not run fzf: %v", err)
+		index, err := db.FuzzyFind(config.SearchStrings())
+		if err != nil {
+			fmt.Printf("could not fuzzy find: %v", err)
 			return
 		}
+
+		uri, err := config.Sessions[index-1].URI()
+		if err != nil {
+			fmt.Printf("could not compile uri: %v", err)
+			return
+		}
+		fmt.Println(uri)
 	},
 }
 
